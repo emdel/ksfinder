@@ -43,11 +43,28 @@
 # 1560829:17d0fc0: [[304e 57c1]] 42de 7fc1 30e4 34c1 621c 7fc1  0NW.B...0.4.b...
 #
 
-import mmap, sys, struct, os
+
+import mmap, sys, struct, os, string
+from collections import OrderedDict
+
+
+def lookup(m, ksymtab_pa, symbol_addr_raw):
+    for addr in range(ksymtab_pa, 0x02000000, 0x04):
+        m.seek(addr)
+        raw = m.read(4)
+        if raw == symbol_addr_raw:
+            symbol_offset = (addr - 4)
+            if len(sys.argv) > 2:
+                print ":: symbol_va packed found at 0x%08x" % symbol_offset
+            m.seek(symbol_offset)
+            addr_raw = m.read(4)
+            symbol_addr = struct.unpack("<L", addr_raw)[0]
+            return symbol_addr
+    return None
 
 def main():
-    if len(sys.argv) != 3:
-        print "[-] Usage: %s %s %s" % (sys.argv[0], "<memory_dump>", "<symbol>")
+    if len(sys.argv) < 2:
+        print "[-] Usage: %s %s %s" % (sys.argv[0], "<memory_dump>", "[symbol]") 
         sys.exit(1)
 
     try:
@@ -89,39 +106,62 @@ def main():
         m.close()
         sys.exit(1)
 
-    # TODO: Recursive - Retrieve all symbols 
+    symbol_names = OrderedDict()
+
+    # TODO: Make it modular 
     candidate_value = ""
+    prev_addr = 0
+    prev_val = ""
     for addr in range(ksymtab_strings - len("init_task"), 0x02000000, 0x01):
         m.seek(addr)
         raw = m.read(1)
         if raw != "\x00": 
             candidate_value += raw
             continue
-        if sys.argv[2] == candidate_value:
+        # Recursive mode. Build necessary data structures
+        kaddr = addr - (len(candidate_value) + 1)
+        if len(sys.argv) == 2:
+            final_check = string.ascii_letters + "_" + string.digits
+            if all(c in final_check for c in candidate_value) and len(candidate_value) >= 2:
+                if len(symbol_names.keys()) == 0:
+                    symbol_names[hex(kaddr).strip("L")] = candidate_value
+                else:
+                    if prev_addr in symbol_names.keys():
+                        if hex(addr - (len(candidate_value) + 1) - (len(symbol_names[prev_addr]) + 1)).strip("L") in symbol_names.keys():
+                            symbol_names[hex(kaddr).strip("L")] = candidate_value
+        # Single lookup mode
+        elif sys.argv[2] == candidate_value:
             symbol_pa = addr - len(sys.argv[2])
             print ":: Symbol %s found at offset: 0x%08x" % (sys.argv[2], symbol_pa)
             #print len(candidate_value), len(sys.argv[2])
             symbol_va = symbol_pa + 0xC0000000
             print ":: Symbol Virtual Address: 0x%08x" % symbol_va
             break
+        prev_addr = hex(kaddr).strip("L")
+        prev_val = candidate_value
         candidate_value = ""
-    
-    print ":: Packing the symbol_va"
-    symbol_addr_raw = struct.pack("<L", symbol_va)
 
-    ksymtab_pa = (ksymtab_strings - 0x100000) >> 2 << 2
-    print ":: __ksymtab offset guess: 0x%08x" % ksymtab_pa
-    for addr in range(ksymtab_pa, 0x02000000, 0x04):
-        m.seek(addr)
-        raw = m.read(4)
-        if raw == symbol_addr_raw:
-            symbol_offset = (addr - 4)
-            print ":: symbol_va packed found at 0x%08x" % symbol_offset
-            m.seek(symbol_offset)
-            addr_raw = m.read(4)
-            symbol_addr = struct.unpack("<L", addr_raw)[0]
-            print ":: Result: %s at 0x%08x" % (sys.argv[2], symbol_addr)
-            break
+    # Single lookup mode
+    if len(sys.argv) > 2:
+        print ":: Packing the symbol_va"
+        symbol_addr_raw = struct.pack("<L", symbol_va)
+        ksymtab_pa = (ksymtab_strings - 0x100000) >> 2 << 2
+        print ":: __ksymtab offset guess: 0x%08x" % ksymtab_pa
+        symbol = lookup(m, ksymtab_pa, symbol_addr_raw)
+        print ":: %s at 0x%08x" % (sys.argv[2], symbol)
+    else:
+        system_map = OrderedDict()
+        print "[+] Retrived %d symbols" % len(symbol_names.keys())
+        ksymtab_pa = (ksymtab_strings - 0x100000) >> 2 << 2
+        for k, v in symbol_names.items():
+            symbol_va = (int(k, 16) + 1) + 0xC0000000
+            symbol_addr_raw = struct.pack("<L", symbol_va)
+            #print ":: Looking up %s - %s" % (v, hex(symbol_va).strip("L"))
+            symbol = lookup(m, ksymtab_pa, symbol_addr_raw)
+            system_map[symbol] = v
+        
+        for k, v in system_map.items():
+            print "%s %s %s" % (hex(k).strip("L")[2:], "?", v)
 
     os.close(fd)
     m.close()

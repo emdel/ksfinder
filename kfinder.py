@@ -124,10 +124,6 @@ def lookup(m, ksymtab_pa, symbol_addr_raw):
     return None
 
 
-# This loop starts from 01000000 (the default address in which the vmlinux 
-# .text is loaded. We loop until 02000000 (no sense to go any further, 
-# I had a look at a couple of iomem outputs and it makes sense).
-# It looks like __ksymtab_strings starts always with 'init_task'.
 def find_ksymtab_strings(m, start_addr, end_addr):
     candidate_value = ""
     ksymtab_strings = None

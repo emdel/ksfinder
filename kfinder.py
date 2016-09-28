@@ -48,58 +48,182 @@ import mmap, sys, struct, os, string
 from collections import OrderedDict
 
 
+PAGE_SIZE = 4096
+ELF_MAGIC = 0x7F454C46
+x64 = 0
+x86 = 0
+is_x86 = False
+is_x64 = False
+THRESHOLD = 20
+
+ei_class_table = {
+0x01: "32bit format",
+0x02: "64bit format"
+}
+
+ei_osabi_table = {
+0x00: "System V",
+0x01: "HP-UX",
+0x02: "NetBSD",
+0x03: "Linix",
+0x06: "Solaris",
+0x07: "AIX",
+0x08: "IRIX",
+0x09: "FreeBSD",
+0x0C: "OpenBSD",
+0x0D: "OpenVMS",
+0x0E: "NonStop Kernel",
+0x0F: "AROS",
+0x10: "Fenix OS",
+0x11: "CloudABI",
+0x53: "Sortix"
+}
+
+e_type_table = {
+0x01: "relocatable",
+0x02: "executable",
+0x03: "shared",
+0x04: "core"
+}
+
+e_machine_table = {
+0x00: "No specific instruction set",
+0x02: "SPARC",
+0x03: "x86",
+0x08: "MIPS",
+0x14: "PowerPC",
+0x28: "ARM",
+0x2A: "SuperH",
+0x32: "IA-64",
+0x3E: "x86_64",
+0xB7: "AArch64"
+}
+
 def lookup(m, ksymtab_pa, symbol_addr_raw):
-    for addr in range(ksymtab_pa, 0x02000000, 0x04):
+    for addr in xrange(ksymtab_pa, 0x3000000, 0x04):
         m.seek(addr)
-        raw = m.read(4)
+        if is_x86:
+            raw = m.read(4)
+        elif is_x64:
+            raw = m.read(8)
         if raw == symbol_addr_raw:
-            symbol_offset = (addr - 4)
+            if is_x86:
+                symbol_offset = (addr - 4)
+            elif is_x64:
+                symbol_offset = (addr - 8)
             if len(sys.argv) > 2:
                 print ":: symbol_va packed found at 0x%08x" % symbol_offset
             m.seek(symbol_offset)
-            addr_raw = m.read(4)
-            symbol_addr = struct.unpack("<L", addr_raw)[0]
+            if is_x86:
+                addr_raw = m.read(4)
+                symbol_addr = struct.unpack("<L", addr_raw)[0]
+            elif is_x64:
+                addr_raw = m.read(8)
+                symbol_addr = struct.unpack("<Q", addr_raw)[0]
             return symbol_addr
     return None
 
+
+# This loop starts from 01000000 (the default address in which the vmlinux 
+# .text is loaded. We loop until 02000000 (no sense to go any further, 
+# I had a look at a couple of iomem outputs and it makes sense).
+# It looks like __ksymtab_strings starts always with 'init_task'.
+def find_ksymtab_strings(m, start_addr, end_addr):
+    candidate_value = ""
+    ksymtab_strings = None
+    for page in range(start_addr, end_addr, PAGE_SIZE):
+        #print "\tPage: %x" % page
+        for addr in range(page, page + PAGE_SIZE - 1, 0x01):
+            m.seek(addr)
+            raw = m.read(1)
+            if raw != "\x00": 
+                candidate_value += raw
+                continue
+            if "init_task" in candidate_value:
+                ksymtab_strings = addr
+                print ":: init_task found at offset: 0x%x" % addr
+                print ":: __ksymtab_strings found at offset: 0x%x" % (addr - len("init_task"))
+                return ksymtab_strings
+            candidate_value = ""
+    return None
+
 def main():
+    global x64, x86, is_x64, is_x86
     if len(sys.argv) < 2:
         print "[-] Usage: %s %s %s" % (sys.argv[0], "<memory_dump>", "[symbol]") 
         sys.exit(1)
 
+    # Open the memory dump
     try:
         fd = os.open(sys.argv[1], os.O_RDONLY)
     except:
         print "[-] Error: fopen.\n"
         sys.exit(1)
 
+    # mmap the dump
     try:
         m = mmap.mmap(fd, 0, mmap.MAP_PRIVATE, mmap.PROT_READ)
     except:
         print "[-] Error: memmap.\n"
         sys.exit(1)
 
-    #
-    # This loop starts from 01000000 (the default address in which the vmlinux 
-    # .text is loaded. We loop until 02000000 (no sense to go any further, 
-    # I had a look at a couple of iomem outputs and it makes sense).
-    # It looks like __ksymtab_strings starts always with 'init_task'.
-    # 
-    candidate_value = ""
-    ksymtab_strings = None
-    for addr in range(0x01000000, 0x02000000, 0x01):
-        m.seek(addr)
-        raw = m.read(1)
-        if raw != "\x00": 
-            candidate_value += raw
-            continue
-        if "init_task" in candidate_value:
-            print ":: __ksymtab_strings found at offset: 0x%08x" % addr
-            #print len(candidate_value), len(sys.argv[2])
-            ksymtab_strings = addr
-            break
-        candidate_value = ""
-   
+    # Scan for ELF files and get the architecture
+    print "Size: " , m.size()
+    for page in range(0, m.size(), PAGE_SIZE):
+        m.seek(page)
+        raw = m.read(4)
+        value = struct.unpack(">L", raw)[0]
+        if value == ELF_MAGIC:
+            print "Page: %x" % page
+            raw = m.read(1)
+            ei_class = struct.unpack("<B", raw)[0]
+            try:
+                print "\t - ei_class: %s" % ei_class_table[ei_class]
+            except KeyError:
+                continue
+            m.seek(page + 0x07)
+            raw = m.read(1)
+            ei_osabi = struct.unpack("<B", raw)[0]
+            try:
+                print "\t - ABI: %s" % ei_osabi_table[ei_osabi]
+            except KeyError:
+                continue
+            m.seek(page + 0x10)
+            raw = m.read(2)
+            e_type = struct.unpack("<H", raw)[0]
+            try:
+                print "\t - e_type: %s" % e_type_table[e_type]
+            except KeyError:
+                continue
+            m.seek(page + 0x12)
+            raw = m.read(2)
+            e_machine = struct.unpack("<H", raw)[0]
+            try:
+                machine = e_machine_table[e_machine]
+                print "\t - e_machine %s" % machine
+                if machine == "x86_64":
+                    x64 += 1
+                elif machine == "x86":
+                    x86 += 1
+            except KeyError:
+                continue
+    if x64 > THRESHOLD and x86 > THRESHOLD:
+        print "Something went wrong."
+        os.close(fd)
+        m.close()
+        sys.exit(1)
+    elif x64 > THRESHOLD:
+        print "\n:: Architecture identified: x86_64"
+        is_x64 = True
+    elif x86 > THRESHOLD:
+        print "\n:: Architecture identified: x86"
+        is_x86 = True
+
+    if is_x86:
+        ksymtab_strings = find_ksymtab_strings(m, 0x01000000, 0x02000000)
+    elif is_x64:
+        ksymtab_strings = find_ksymtab_strings(m, 0x100000, 0x03000000)
+
     if not ksymtab_strings:
         print ":: __ksymtab_strings not found..."
         os.close(fd)
@@ -112,7 +236,7 @@ def main():
     candidate_value = ""
     prev_addr = 0
     prev_val = ""
-    for addr in range(ksymtab_strings - len("init_task"), 0x02000000, 0x01):
+    for addr in range(ksymtab_strings - len("init_task"), 0x03000000, 0x01):
         m.seek(addr)
         raw = m.read(1)
         if raw != "\x00": 
@@ -134,7 +258,10 @@ def main():
             symbol_pa = addr - len(sys.argv[2])
             print ":: Symbol %s found at offset: 0x%08x" % (sys.argv[2], symbol_pa)
             #print len(candidate_value), len(sys.argv[2])
-            symbol_va = symbol_pa + 0xC0000000
+            if is_x86:
+                symbol_va = symbol_pa + 0xC0000000
+            elif is_x64:
+                symbol_va = symbol_pa + 0xFFFFFFFF80000000
             print ":: Symbol Virtual Address: 0x%08x" % symbol_va
             break
         prev_addr = hex(kaddr).strip("L")
@@ -144,7 +271,10 @@ def main():
     # Single lookup mode
     if len(sys.argv) > 2:
         print ":: Packing the symbol_va"
-        symbol_addr_raw = struct.pack("<L", symbol_va)
+        if is_x86:
+            symbol_addr_raw = struct.pack("<L", symbol_va)
+        elif is_x64:
+            symbol_addr_raw = struct.pack("<Q", symbol_va)
         ksymtab_pa = (ksymtab_strings - 0x100000) >> 2 << 2
         print ":: __ksymtab offset guess: 0x%08x" % ksymtab_pa
         symbol = lookup(m, ksymtab_pa, symbol_addr_raw)
@@ -152,10 +282,15 @@ def main():
     else:
         system_map = OrderedDict()
         print "[+] Retrived %d symbols" % len(symbol_names.keys())
+        print symbol_names
         ksymtab_pa = (ksymtab_strings - 0x100000) >> 2 << 2
         for k, v in symbol_names.items():
-            symbol_va = (int(k, 16) + 1) + 0xC0000000
-            symbol_addr_raw = struct.pack("<L", symbol_va)
+            if is_x86:
+                symbol_va = (int(k, 16) + 1) + 0xC0000000
+                symbol_addr_raw = struct.pack("<L", symbol_va)
+            elif is_x64:
+                symbol_va = (int(k, 16) + 1) + 0xFFFFFFFF80000000
+                symbol_addr_raw = struct.pack("<Q", symbol_va)
             #print ":: Looking up %s - %s" % (v, hex(symbol_va).strip("L"))
             symbol = lookup(m, ksymtab_pa, symbol_addr_raw)
             system_map[symbol] = v

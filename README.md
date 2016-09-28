@@ -16,6 +16,35 @@ two interesting sections: `__ksymtab_strings` and `__ksymtab`.
 
 === EXAMPLES ===
 
+
+        08:38:53 emdel -> python kfinder.py /home/emdel/Downloads/fmem_1.6-0/vm-ksfinder-fmem.raw init_task
+        ...
+        ...
+        Page: b8349000
+                 - ei_class: 64bit format
+                 - ABI: System V
+                 - e_type: shared
+                 - e_machine x86_64
+        Page: b9d77000
+                 - ei_class: 64bit format
+                 - ABI: System V
+                 - e_type: relocatable
+                 - e_machine x86_64
+
+        :: Architecture identified: x86_64
+        :: init_task found at offset: 0x1b8243f
+        :: __ksymtab_strings found at offset: 0x1b82436
+        :: Symbol init_task found at offset: 0x01b82436
+        :: Symbol Virtual Address: 0xffffffff81b82436
+        :: Packing the symbol_va
+        :: __ksymtab offset guess: 0x01a8243c
+        :: symbol_va packed found at 0x01b5aa40
+        :: init_task at 0xffffffff81c1d4e0
+
+
+Old example - x86_32 bit only (missing x86_64 support and the check to identify
+the architecture):
+
         emdel -> time python kfinder.py kernelexp.ram init_task
         :: __ksymtab_strings found at offset: 0x017e172d
         :: Symbol init_task found at offset: 0x017e1724
@@ -63,13 +92,13 @@ two interesting sections: `__ksymtab_strings` and `__ksymtab`.
         c1003f70 ? xen_hvm_need_lapic
 
 
-=== TODO AND LIMITATIONS ===
+=== LIMITATIONS ===
 
-It supports only x86-32 memory dumps.
-It has been tested on very few memory dump.
-It is a simple POC :-)
-In the future, I will write a Volatility plugin 
-and provide x86-64 support.
+It has been tested on very few memory dumps.
+I used 'fmem' to dump the memory.
+I tried with 'Lime' in the raw format, but 
+there are some offset issues. Contact me if 
+you want to discuss about it.
 
 
 Happy hacking,
